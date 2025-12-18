@@ -7,10 +7,14 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - WORKER_URL=http://worker:3001
 
   worker:
     build:
       context: .
       target: worker
+    ports:
+      - "3001:3001"
     environment:
       - NODE_ENV=production
+      - PORT=3001
