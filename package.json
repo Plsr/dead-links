@@ -1,0 +1,14 @@
+{
+  "name": "dead-links",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm run --parallel dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:worker": "pnpm --filter worker dev",
+    "build": "pnpm run --parallel build",
+    "build:web": "pnpm --filter web build",
+    "build:worker": "pnpm --filter worker build"
+  },
+  "packageManager": "pnpm@10.24.0"
+}

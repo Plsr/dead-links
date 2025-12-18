@@ -1,0 +1,16 @@
+services:
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+
+  worker:
+    build:
+      context: .
+      target: worker
+    environment:
+      - NODE_ENV=production
