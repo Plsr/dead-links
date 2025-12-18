@@ -1,26 +1,38 @@
-# Base stage with pnpm
+# Base stage with pnpm (for web)
 FROM node:22-alpine AS base
 RUN corepack enable && corepack prepare pnpm@10.24.0 --activate
 WORKDIR /app
 
-# Dependencies stage
-FROM base AS deps
+# Base stage for worker (with Playwright browsers)
+FROM mcr.microsoft.com/playwright:v1.49.1-noble AS base-playwright
+RUN corepack enable && corepack prepare pnpm@10.24.0 --activate
+WORKDIR /app
+
+# Dependencies stage for web
+FROM base AS deps-web
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json ./web/
 COPY worker/package.json ./worker/
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --filter web
+
+# Dependencies stage for worker
+FROM base-playwright AS deps-worker
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json ./web/
+COPY worker/package.json ./worker/
+RUN pnpm install --frozen-lockfile --filter worker
 
 # Build stage for web
 FROM base AS build-web
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/web/node_modules ./web/node_modules
+COPY --from=deps-web /app/node_modules ./node_modules
+COPY --from=deps-web /app/web/node_modules ./web/node_modules
 COPY . .
 RUN pnpm --filter web build
 
 # Build stage for worker
-FROM base AS build-worker
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/worker/node_modules ./worker/node_modules
+FROM base-playwright AS build-worker
+COPY --from=deps-worker /app/node_modules ./node_modules
+COPY --from=deps-worker /app/worker/node_modules ./worker/node_modules
 COPY . .
 RUN pnpm --filter worker build
 
@@ -40,11 +52,11 @@ ENV HOSTNAME="0.0.0.0"
 CMD ["node", "web/server.js"]
 
 # Production stage for worker
-FROM node:22-alpine AS worker
+FROM mcr.microsoft.com/playwright:v1.49.1-noble AS worker
 WORKDIR /app
 ENV NODE_ENV=production
 
 COPY --from=build-worker /app/worker/dist ./dist
-COPY --from=build-worker /app/worker/package.json ./
+COPY --from=deps-worker /app/worker/node_modules ./node_modules
 
 CMD ["node", "dist/index.js"]

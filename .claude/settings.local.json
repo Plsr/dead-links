@@ -7,7 +7,10 @@
       "Bash(pnpm approve-builds:*)",
       "Bash(pnpm rebuild:*)",
       "Bash(pnpm --filter worker build:*)",
-      "Bash(pnpm --filter web build:*)"
+      "Bash(pnpm --filter web build:*)",
+      "Bash(npx playwright install chromium)",
+      "Bash(pnpm dev:worker:*)",
+      "Bash(pnpm --filter worker dev:*)"
     ]
   }
 }

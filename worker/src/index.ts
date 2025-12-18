@@ -1,15 +1,17 @@
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { chromium } from "playwright";
 
 async function main(): Promise<void> {
   console.log("Worker starting...");
 
-  while (true) {
-    console.log("Processing task...");
-    await sleep(2000);
-    console.log("Task completed!");
-  }
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  await page.goto("https://chrisjarling.com");
+  const title = await page.title();
+  console.log("Page title:", title);
+
+  await browser.close();
+  console.log("Worker finished.");
 }
 
 main().catch((error) => {
