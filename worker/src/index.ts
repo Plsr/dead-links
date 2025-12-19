@@ -1,11 +1,7 @@
 import express from "express";
-import {
-  initBrowser,
-  closeBrowser,
-  createJob,
-  getJob,
-  JobOptions,
-} from "./job.js";
+import { initBrowser, closeBrowser } from "./processor.js";
+import * as jobService from "./services/job.service.js";
+import type { JobOptions } from "./lib/types.js";
 
 const PORT = process.env.PORT || 3001;
 
@@ -15,7 +11,7 @@ async function main(): Promise<void> {
   const app = express();
   app.use(express.json());
 
-  app.post("/jobs", (req, res) => {
+  app.post("/jobs", async (req, res) => {
     const { url, options, ...rest } = req.body ?? {};
 
     if (!url) {
@@ -29,19 +25,29 @@ async function main(): Promise<void> {
       ...(typeof options === "object" ? (options as JobOptions) : {}),
     };
 
-    const job = createJob(url, mergedOptions);
-    res.status(202).json({ id: job.id, status: job.status });
+    try {
+      const job = await jobService.createJob({ url, options: mergedOptions });
+      res.status(202).json(job);
+    } catch (error) {
+      console.error("Failed to create job:", error);
+      res.status(500).json({ error: "Failed to create job" });
+    }
   });
 
-  app.get("/jobs/:id", (req, res) => {
-    const job = getJob(req.params.id);
+  app.get("/jobs/:id", async (req, res) => {
+    try {
+      const job = await jobService.getJob(req.params.id);
 
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
+      if (!job) {
+        res.status(404).json({ error: "Job not found" });
+        return;
+      }
+
+      res.json(job);
+    } catch (error) {
+      console.error("Failed to get job:", error);
+      res.status(500).json({ error: "Failed to get job" });
     }
-
-    res.json(job);
   });
 
   const server = app.listen(PORT, () => {

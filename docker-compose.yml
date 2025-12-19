@@ -1,4 +1,15 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: deadlinks
+      POSTGRES_PASSWORD: deadlinks
+      POSTGRES_DB: deadlinks
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   web:
     build:
       context: .
@@ -8,6 +19,9 @@ services:
     environment:
       - NODE_ENV=production
       - WORKER_URL=http://worker:3001
+      - DATABASE_URL=postgresql://deadlinks:deadlinks@postgres:5432/deadlinks
+    depends_on:
+      - postgres
 
   worker:
     build:
@@ -18,3 +32,9 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - DATABASE_URL=postgresql://deadlinks:deadlinks@postgres:5432/deadlinks
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:

@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { chromium, Browser } from "playwright";
-import { normalizeOptions } from "./lib/options.js";
 import { isAlive } from "./lib/http.js";
 import {
   extractSitemapUrlsFromRobotsTxt,
@@ -8,49 +6,14 @@ import {
 } from "./lib/sitemap.js";
 import { selectInternalPagesToCrawl } from "./lib/crawl.js";
 import { sleep, jitter } from "./lib/time.js";
-
-export type { JobOptions } from "./lib/types.js";
 import type { JobOptions } from "./lib/types.js";
-
-type JobStatus = "pending" | "processing" | "completed" | "failed";
-
-type LinkStatus = "alive" | "dead" | "error";
-
-type DiscoveryMethod = "sitemap" | "scrape";
-
-export interface LinkResult {
-  url: string;
-  status: LinkStatus;
-  statusCode?: number;
-  error?: string;
-}
-
-export interface JobResult {
-  title: string;
-  discoveryMethod: DiscoveryMethod;
-  pagesCrawled: number;
-  pagesCrawledUrls: string[];
-  linksChecked: number;
-  alive: number;
-  dead: number;
-  errors: number;
-  links: LinkResult[];
-}
-
-export interface Job {
-  id: string;
-  url: string;
-  options: Required<JobOptions>;
-  status: JobStatus;
-  result?: JobResult;
-  error?: string;
-  createdAt: Date;
-  completedAt?: Date;
-}
+import type {
+  JobResult,
+  LinkResult,
+  DiscoveryMethod,
+} from "./db/schema.js";
 
 let browser: Browser;
-
-const jobs = new Map<string, Job>();
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -64,26 +27,16 @@ export async function closeBrowser(): Promise<void> {
   await browser.close();
 }
 
-export function createJob(url: string, options?: JobOptions): Job {
-  const normalized = normalizeOptions(options);
-  const job: Job = {
-    id: randomUUID(),
-    url,
-    options: normalized,
-    status: "pending",
-    createdAt: new Date(),
-  };
-
-  jobs.set(job.id, job);
-  console.log(`Job ${job.id} created for ${url}`);
-
-  processJob(job);
-
-  return job;
+export interface ProcessJobCallbacks {
+  onProcessing: () => Promise<void>;
+  onCompleted: (result: JobResult) => Promise<void>;
+  onFailed: (error: string) => Promise<void>;
 }
 
-export function getJob(id: string): Job | undefined {
-  return jobs.get(id);
+export interface ProcessJobInput {
+  id: string;
+  url: string;
+  options: Required<JobOptions>;
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -415,8 +368,11 @@ async function checkLinks(
   return results;
 }
 
-async function processJob(job: Job): Promise<void> {
-  job.status = "processing";
+export async function processJob(
+  job: ProcessJobInput,
+  callbacks: ProcessJobCallbacks
+): Promise<void> {
+  await callbacks.onProcessing();
 
   try {
     const baseUrl = new URL(job.url).origin;
@@ -482,7 +438,7 @@ async function processJob(job: Job): Promise<void> {
     const dead = results.filter((r) => r.status === "dead").length;
     const errors = results.filter((r) => r.status === "error").length;
 
-    job.result = {
+    const result: JobResult = {
       title,
       discoveryMethod,
       pagesCrawled: pagesCrawledUrls.length,
@@ -493,16 +449,14 @@ async function processJob(job: Job): Promise<void> {
       errors,
       links: results,
     };
-    job.status = "completed";
+
+    await callbacks.onCompleted(result);
 
     console.log(
       `Job ${job.id} completed: ${alive} alive, ${dead} dead, ${errors} errors`
     );
   } catch (error) {
-    job.status = "failed";
-    job.error = String(error);
+    await callbacks.onFailed(String(error));
     console.error(`Job ${job.id} failed:`, error);
-  } finally {
-    job.completedAt = new Date();
   }
 }
