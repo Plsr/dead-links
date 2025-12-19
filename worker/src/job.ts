@@ -1,49 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { chromium, Browser } from "playwright";
+import { normalizeOptions } from "./lib/options.js";
+import { isAlive } from "./lib/http.js";
+import {
+  extractSitemapUrlsFromRobotsTxt,
+  extractSitemapUrlsFromXml,
+} from "./lib/sitemap.js";
+import { selectInternalPagesToCrawl } from "./lib/crawl.js";
+import { sleep, jitter } from "./lib/time.js";
+
+export type { JobOptions } from "./lib/types.js";
+import type { JobOptions } from "./lib/types.js";
 
 type JobStatus = "pending" | "processing" | "completed" | "failed";
 
 type LinkStatus = "alive" | "dead" | "error";
 
 type DiscoveryMethod = "sitemap" | "scrape";
-
-export interface JobOptions {
-  /**
-   * When sitemap discovery fails and we fall back to scraping, also visit a
-   * limited number of internal links found on the root page (depth 1) and
-   * collect links from those pages too.
-   */
-  followInternalLinks?: boolean;
-  /**
-   * Max number of internal (same-origin) pages to visit from the root page when
-   * followInternalLinks is enabled.
-   */
-  maxInternalPages?: number;
-  /**
-   * Cap discovered URLs to check (prevents huge sitemaps from hammering servers).
-   */
-  maxLinksToCheck?: number;
-  /**
-   * Link check concurrency (lower is gentler).
-   */
-  linkCheckConcurrency?: number;
-  /**
-   * Delay between link-check batches in ms (adds backpressure).
-   */
-  linkBatchDelayMs?: number;
-  /**
-   * Random jitter (0..N ms) added to each batch delay.
-   */
-  linkBatchJitterMs?: number;
-  /**
-   * Delay between page navigations while scraping in ms.
-   */
-  navigationDelayMs?: number;
-  /**
-   * Random jitter (0..N ms) added to each navigation delay.
-   */
-  navigationJitterMs?: number;
-}
 
 export interface LinkResult {
   url: string;
@@ -81,33 +54,6 @@ const jobs = new Map<string, Job>();
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-
-const DEFAULT_OPTIONS: Required<JobOptions> = {
-  followInternalLinks: true,
-  maxInternalPages: 10,
-  maxLinksToCheck: 500,
-  linkCheckConcurrency: 3,
-  linkBatchDelayMs: 600,
-  linkBatchJitterMs: 400,
-  navigationDelayMs: 800,
-  navigationJitterMs: 500,
-};
-
-function normalizeOptions(options?: JobOptions): Required<JobOptions> {
-  return {
-    ...DEFAULT_OPTIONS,
-    ...(options ?? {}),
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function jitter(maxMs: number): number {
-  if (maxMs <= 0) return 0;
-  return Math.floor(Math.random() * (maxMs + 1));
-}
 
 export async function initBrowser(): Promise<void> {
   console.log("Starting browser...");
@@ -162,15 +108,7 @@ async function getSitemapUrlsFromRobots(baseUrl: string): Promise<string[]> {
   const robotsUrl = new URL("/robots.txt", baseUrl).href;
   const robotsTxt = await fetchText(robotsUrl);
   if (!robotsTxt) return [];
-
-  const sitemapUrls: string[] = [];
-  for (const line of robotsTxt.split("\n")) {
-    const match = line.match(/^Sitemap:\s*(.+)$/i);
-    if (match) {
-      sitemapUrls.push(match[1].trim());
-    }
-  }
-  return sitemapUrls;
+  return extractSitemapUrlsFromRobotsTxt(robotsTxt);
 }
 
 async function parseSitemap(sitemapUrl: string): Promise<string[]> {
@@ -178,25 +116,18 @@ async function parseSitemap(sitemapUrl: string): Promise<string[]> {
   if (!xml) return [];
 
   const urls: string[] = [];
-
-  // Check if it's a sitemap index
-  const sitemapIndexMatches = xml.matchAll(/<sitemap>\s*<loc>([^<]+)<\/loc>/gi);
-  const childSitemaps = Array.from(sitemapIndexMatches, (m) => m[1].trim());
+  const { childSitemaps, urls: directUrls } = extractSitemapUrlsFromXml(xml);
 
   if (childSitemaps.length > 0) {
-    // It's a sitemap index, recursively parse each sitemap
     console.log(`Found sitemap index with ${childSitemaps.length} sitemaps`);
     for (const childUrl of childSitemaps) {
       const childUrls = await parseSitemap(childUrl);
       urls.push(...childUrls);
     }
-  } else {
-    // Regular sitemap, extract URLs
-    const urlMatches = xml.matchAll(/<url>\s*<loc>([^<]+)<\/loc>/gi);
-    for (const match of urlMatches) {
-      urls.push(match[1].trim());
-    }
+    return urls;
   }
+
+  urls.push(...directUrls);
 
   return urls;
 }
@@ -233,7 +164,6 @@ async function discoverFromPages(
 ): Promise<{ title: string; links: string[]; pagesCrawledUrls: string[] }> {
   const root = new URL(rootUrl);
   const rootOrigin = root.origin;
-  const rootHost = root.host;
 
   const context = await browser.newContext({
     userAgent: USER_AGENT,
@@ -386,27 +316,15 @@ async function discoverFromPages(
     const title = root.title ?? "";
 
     if (options.followInternalLinks) {
-      const normalizedRoot = new URL(rootUrl);
-      normalizedRoot.hash = "";
       const candidates = new Set<string>();
 
       for (const u of root.internalLinks) candidates.add(u);
       for (const u of extraInternalPages ?? []) candidates.add(u);
-
-      const internalToVisit = Array.from(candidates)
-        .filter((u) => {
-          try {
-            const parsed = new URL(u);
-            return (
-              (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-              parsed.host === rootHost
-            );
-          } catch {
-            return false;
-          }
-        })
-        .filter((u) => u !== normalizedRoot.href)
-        .slice(0, options.maxInternalPages);
+      const internalToVisit = selectInternalPagesToCrawl({
+        rootUrl,
+        candidates,
+        maxInternalPages: options.maxInternalPages,
+      });
 
       for (const internalUrl of internalToVisit) {
         await sleep(
@@ -427,13 +345,6 @@ async function discoverFromPages(
     await page.close();
     await context.close();
   }
-}
-
-function isAlive(statusCode: number): boolean {
-  if (statusCode >= 200 && statusCode < 400) return true;
-  // Treat auth-required as alive (page exists, just restricted)
-  if (statusCode === 401 || statusCode === 403) return true;
-  return false;
 }
 
 async function checkLink(url: string): Promise<LinkResult> {

@@ -10,7 +10,9 @@
       "Bash(pnpm --filter web build:*)",
       "Bash(npx playwright install chromium)",
       "Bash(pnpm dev:worker:*)",
-      "Bash(pnpm --filter worker dev:*)"
+      "Bash(pnpm --filter worker dev:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm test:worker:*)"
     ]
   }
 }

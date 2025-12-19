@@ -8,7 +8,9 @@
     "dev:worker": "pnpm --filter worker dev",
     "build": "pnpm run --parallel build",
     "build:web": "pnpm --filter web build",
-    "build:worker": "pnpm --filter worker build"
+    "build:worker": "pnpm --filter worker build",
+    "test": "pnpm --filter worker test",
+    "test:watch": "pnpm --filter worker test:watch"
   },
   "packageManager": "pnpm@10.24.0"
 }
