@@ -7,6 +7,44 @@ type LinkStatus = "alive" | "dead" | "error";
 
 type DiscoveryMethod = "sitemap" | "scrape";
 
+export interface JobOptions {
+  /**
+   * When sitemap discovery fails and we fall back to scraping, also visit a
+   * limited number of internal links found on the root page (depth 1) and
+   * collect links from those pages too.
+   */
+  followInternalLinks?: boolean;
+  /**
+   * Max number of internal (same-origin) pages to visit from the root page when
+   * followInternalLinks is enabled.
+   */
+  maxInternalPages?: number;
+  /**
+   * Cap discovered URLs to check (prevents huge sitemaps from hammering servers).
+   */
+  maxLinksToCheck?: number;
+  /**
+   * Link check concurrency (lower is gentler).
+   */
+  linkCheckConcurrency?: number;
+  /**
+   * Delay between link-check batches in ms (adds backpressure).
+   */
+  linkBatchDelayMs?: number;
+  /**
+   * Random jitter (0..N ms) added to each batch delay.
+   */
+  linkBatchJitterMs?: number;
+  /**
+   * Delay between page navigations while scraping in ms.
+   */
+  navigationDelayMs?: number;
+  /**
+   * Random jitter (0..N ms) added to each navigation delay.
+   */
+  navigationJitterMs?: number;
+}
+
 export interface LinkResult {
   url: string;
   status: LinkStatus;
@@ -17,6 +55,8 @@ export interface LinkResult {
 export interface JobResult {
   title: string;
   discoveryMethod: DiscoveryMethod;
+  pagesCrawled: number;
+  pagesCrawledUrls: string[];
   linksChecked: number;
   alive: number;
   dead: number;
@@ -27,6 +67,7 @@ export interface JobResult {
 export interface Job {
   id: string;
   url: string;
+  options: Required<JobOptions>;
   status: JobStatus;
   result?: JobResult;
   error?: string;
@@ -41,6 +82,33 @@ const jobs = new Map<string, Job>();
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+const DEFAULT_OPTIONS: Required<JobOptions> = {
+  followInternalLinks: true,
+  maxInternalPages: 10,
+  maxLinksToCheck: 500,
+  linkCheckConcurrency: 3,
+  linkBatchDelayMs: 600,
+  linkBatchJitterMs: 400,
+  navigationDelayMs: 800,
+  navigationJitterMs: 500,
+};
+
+function normalizeOptions(options?: JobOptions): Required<JobOptions> {
+  return {
+    ...DEFAULT_OPTIONS,
+    ...(options ?? {}),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function jitter(maxMs: number): number {
+  if (maxMs <= 0) return 0;
+  return Math.floor(Math.random() * (maxMs + 1));
+}
+
 export async function initBrowser(): Promise<void> {
   console.log("Starting browser...");
   browser = await chromium.launch();
@@ -50,10 +118,12 @@ export async function closeBrowser(): Promise<void> {
   await browser.close();
 }
 
-export function createJob(url: string): Job {
+export function createJob(url: string, options?: JobOptions): Job {
+  const normalized = normalizeOptions(options);
   const job: Job = {
     id: randomUUID(),
     url,
+    options: normalized,
     status: "pending",
     createdAt: new Date(),
   };
@@ -74,7 +144,12 @@ async function fetchText(url: string): Promise<string | null> {
   try {
     const response = await fetch(url, {
       signal: AbortSignal.timeout(10000),
-      headers: { "User-Agent": USER_AGENT },
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
     });
     if (!response.ok) return null;
     return await response.text();
@@ -151,29 +226,206 @@ async function discoverFromSitemap(baseUrl: string): Promise<string[]> {
   return Array.from(urls);
 }
 
-async function discoverFromPage(url: string): Promise<{ title: string; links: string[] }> {
-  const page = await browser.newPage();
-  try {
-    await page.goto(url);
-    const title = await page.title();
+async function discoverFromPages(
+  rootUrl: string,
+  options: Required<JobOptions>,
+  extraInternalPages?: string[]
+): Promise<{ title: string; links: string[]; pagesCrawledUrls: string[] }> {
+  const root = new URL(rootUrl);
+  const rootOrigin = root.origin;
+  const rootHost = root.host;
 
-    const links = await page.evaluate(() => {
-      const anchors = document.querySelectorAll("a[href]");
-      const urls = new Set<string>();
+  const context = await browser.newContext({
+    userAgent: USER_AGENT,
+    locale: "en-US",
+    viewport: { width: 1365, height: 768 },
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
 
-      anchors.forEach((a) => {
-        const href = (a as HTMLAnchorElement).href;
-        if (href.startsWith("http://") || href.startsWith("https://")) {
-          urls.add(href);
-        }
-      });
+  // Make Playwright a bit less "obviously automated" where possible.
+  // This is not guaranteed, but it helps some basic checks.
+  await context.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    } catch {
+      // ignore
+    }
+  });
 
-      return Array.from(urls);
+  // Reduce bandwidth / server load by skipping non-essential assets.
+  await context.route("**/*", (route) => {
+    const type = route.request().resourceType();
+    if (type === "image" || type === "media" || type === "font") {
+      route.abort();
+      return;
+    }
+    route.continue();
+  });
+
+  const page = await context.newPage();
+
+  const allLinks = new Set<string>();
+  const crawledPages = new Set<string>();
+
+  async function extractLinks(
+    currentPageUrl: string
+  ): Promise<{ title?: string; internalLinks: string[] }> {
+    await page.goto(currentPageUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
     });
 
-    return { title, links };
+    // Small human-ish pause after load.
+    await sleep(250 + jitter(250));
+
+    const title = await page.title().catch(() => "");
+
+    // Track crawled pages (for reporting).
+    try {
+      const normalized = new URL(currentPageUrl);
+      normalized.hash = "";
+      crawledPages.add(normalized.href);
+    } catch {
+      // ignore
+    }
+
+    const { absoluteLinks, internalLinks } = await page.evaluate<
+      {
+        absoluteLinks: string[];
+        internalLinks: string[];
+      },
+      string
+    >((origin) => {
+      // Keep this callback "flat" (no nested helper functions). Some dev
+      // toolchains (tsx/esbuild) inject helpers like __name() for inner
+      // functions, which would break when Playwright executes this in-page.
+
+      // Only extract from HTML body content (avoid head/scripts/etc),
+      // but include nav/footer links too.
+      const container = document.body ?? document.documentElement;
+      const anchors = Array.from(container.querySelectorAll("a[href]"));
+
+      const abs = new Set<string>();
+      const internal = new Set<string>();
+
+      const nonContentExt =
+        /\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|7z|tar|gz|bz2|mp[34]|m4a|wav|ogg|mov|mp4|avi|webm|png|jpe?g|gif|webp|svg|ico|css|js|map|json|xml|rss|atom|woff2?|ttf|otf|eot)$/i;
+
+      const trackingParams = new Set([
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "gclid",
+        "fbclid",
+        "msclkid",
+      ]);
+
+      for (const el of anchors) {
+        const a = el;
+        const raw = a.getAttribute("href") || "";
+        if (!raw) continue;
+        if (
+          raw.startsWith("mailto:") ||
+          raw.startsWith("tel:") ||
+          raw.startsWith("javascript:")
+        ) {
+          continue;
+        }
+
+        let resolved;
+        try {
+          resolved = new URL(raw, window.location.href);
+        } catch {
+          continue;
+        }
+
+        // Normalize for discovery / dedupe
+        resolved.hash = "";
+
+        if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+          continue;
+        }
+
+        abs.add(resolved.href);
+
+        if (resolved.origin !== origin) continue;
+
+        const rel = (a.getAttribute("rel") || "").toLowerCase();
+        if (a.hasAttribute("download")) continue;
+        if (rel.split(/\s+/).includes("nofollow")) continue;
+        if (nonContentExt.test(resolved.pathname)) continue;
+
+        // Drop common tracking params to reduce duplicate crawling.
+        for (const key of Array.from(resolved.searchParams.keys())) {
+          if (trackingParams.has(key.toLowerCase())) {
+            resolved.searchParams.delete(key);
+          }
+        }
+
+        internal.add(resolved.href);
+      }
+
+      return {
+        absoluteLinks: Array.from(abs),
+        internalLinks: Array.from(internal),
+      };
+    }, rootOrigin);
+
+    for (const link of absoluteLinks) allLinks.add(link);
+
+    return { title, internalLinks };
+  }
+
+  try {
+    const root = await extractLinks(rootUrl);
+    const title = root.title ?? "";
+
+    if (options.followInternalLinks) {
+      const normalizedRoot = new URL(rootUrl);
+      normalizedRoot.hash = "";
+      const candidates = new Set<string>();
+
+      for (const u of root.internalLinks) candidates.add(u);
+      for (const u of extraInternalPages ?? []) candidates.add(u);
+
+      const internalToVisit = Array.from(candidates)
+        .filter((u) => {
+          try {
+            const parsed = new URL(u);
+            return (
+              (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+              parsed.host === rootHost
+            );
+          } catch {
+            return false;
+          }
+        })
+        .filter((u) => u !== normalizedRoot.href)
+        .slice(0, options.maxInternalPages);
+
+      for (const internalUrl of internalToVisit) {
+        await sleep(
+          options.navigationDelayMs + jitter(options.navigationJitterMs)
+        );
+        await extractLinks(internalUrl).catch(() => {
+          // ignore navigation failures while scraping; link checking will reveal issues
+        });
+      }
+    }
+
+    return {
+      title,
+      links: Array.from(allLinks),
+      pagesCrawledUrls: Array.from(crawledPages),
+    };
   } finally {
     await page.close();
+    await context.close();
   }
 }
 
@@ -192,6 +444,8 @@ async function checkLink(url: string): Promise<LinkResult> {
       signal: AbortSignal.timeout(10000),
       headers: {
         "User-Agent": USER_AGENT,
+        Accept: "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
       },
     });
 
@@ -203,6 +457,9 @@ async function checkLink(url: string): Promise<LinkResult> {
         signal: AbortSignal.timeout(10000),
         headers: {
           "User-Agent": USER_AGENT,
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
         },
       });
     }
@@ -221,15 +478,27 @@ async function checkLink(url: string): Promise<LinkResult> {
   }
 }
 
-async function checkLinks(links: string[], jobId: string): Promise<LinkResult[]> {
+async function checkLinks(
+  links: string[],
+  jobId: string,
+  options: Required<JobOptions>
+): Promise<LinkResult[]> {
   const results: LinkResult[] = [];
-  const concurrency = 5;
+  const concurrency = Math.max(1, options.linkCheckConcurrency);
 
   for (let i = 0; i < links.length; i += concurrency) {
     const batch = links.slice(i, i + concurrency);
     const batchResults = await Promise.all(batch.map(checkLink));
     results.push(...batchResults);
-    console.log(`Job ${jobId}: Checked ${Math.min(i + concurrency, links.length)}/${links.length} links`);
+    console.log(
+      `Job ${jobId}: Checked ${Math.min(i + concurrency, links.length)}/${
+        links.length
+      } links`
+    );
+
+    if (i + concurrency < links.length) {
+      await sleep(options.linkBatchDelayMs + jitter(options.linkBatchJitterMs));
+    }
   }
 
   return results;
@@ -243,33 +512,60 @@ async function processJob(job: Job): Promise<void> {
     let links: string[] = [];
     let title = "";
     let discoveryMethod: DiscoveryMethod = "sitemap";
+    let pagesCrawledUrls: string[] = [];
 
     // Try sitemap first
     console.log(`Job ${job.id}: Trying sitemap discovery`);
-    links = await discoverFromSitemap(baseUrl);
+    const sitemapPages = await discoverFromSitemap(baseUrl);
 
-    if (links.length > 0) {
-      console.log(`Job ${job.id}: Found ${links.length} URLs from sitemap`);
-      // Get title from the main page
-      const page = await browser.newPage();
-      try {
-        await page.goto(job.url);
-        title = await page.title();
-      } finally {
-        await page.close();
-      }
-    } else {
-      // Fall back to page scraping
-      console.log(`Job ${job.id}: No sitemap found, falling back to page scraping`);
-      discoveryMethod = "scrape";
-      const pageData = await discoverFromPage(job.url);
+    if (sitemapPages.length > 0) {
+      console.log(
+        `Job ${job.id}: Found ${sitemapPages.length} URLs from sitemap`
+      );
+
+      // Even if sitemap exists, we still need to *scrape pages* to discover
+      // outbound links to check. Use the sitemap as additional internal pages
+      // to crawl (bounded by maxInternalPages).
+      const extraInternalPages = sitemapPages
+        .filter((u) => {
+          try {
+            return new URL(u).origin === baseUrl;
+          } catch {
+            return false;
+          }
+        })
+        .slice(0, job.options.maxInternalPages);
+
+      const pageData = await discoverFromPages(
+        job.url,
+        job.options,
+        extraInternalPages
+      );
       title = pageData.title;
       links = pageData.links;
+      pagesCrawledUrls = pageData.pagesCrawledUrls;
+    } else {
+      // Fall back to page scraping
+      console.log(
+        `Job ${job.id}: No sitemap found, falling back to page scraping`
+      );
+      discoveryMethod = "scrape";
+      const pageData = await discoverFromPages(job.url, job.options);
+      title = pageData.title;
+      links = pageData.links;
+      pagesCrawledUrls = pageData.pagesCrawledUrls;
+    }
+
+    if (links.length > job.options.maxLinksToCheck) {
+      console.log(
+        `Job ${job.id}: Capping links from ${links.length} to ${job.options.maxLinksToCheck} to reduce load`
+      );
+      links = links.slice(0, job.options.maxLinksToCheck);
     }
 
     console.log(`Job ${job.id}: Found ${links.length} links to check`);
 
-    const results = await checkLinks(links, job.id);
+    const results = await checkLinks(links, job.id, job.options);
 
     const alive = results.filter((r) => r.status === "alive").length;
     const dead = results.filter((r) => r.status === "dead").length;
@@ -278,6 +574,8 @@ async function processJob(job: Job): Promise<void> {
     job.result = {
       title,
       discoveryMethod,
+      pagesCrawled: pagesCrawledUrls.length,
+      pagesCrawledUrls,
       linksChecked: results.length,
       alive,
       dead,
@@ -286,7 +584,9 @@ async function processJob(job: Job): Promise<void> {
     };
     job.status = "completed";
 
-    console.log(`Job ${job.id} completed: ${alive} alive, ${dead} dead, ${errors} errors`);
+    console.log(
+      `Job ${job.id} completed: ${alive} alive, ${dead} dead, ${errors} errors`
+    );
   } catch (error) {
     job.status = "failed";
     job.error = String(error);

@@ -1,5 +1,11 @@
 import express from "express";
-import { initBrowser, closeBrowser, createJob, getJob } from "./job.js";
+import {
+  initBrowser,
+  closeBrowser,
+  createJob,
+  getJob,
+  JobOptions,
+} from "./job.js";
 
 const PORT = process.env.PORT || 3001;
 
@@ -10,14 +16,20 @@ async function main(): Promise<void> {
   app.use(express.json());
 
   app.post("/jobs", (req, res) => {
-    const { url } = req.body;
+    const { url, options, ...rest } = req.body ?? {};
 
     if (!url) {
       res.status(400).json({ error: "url is required" });
       return;
     }
 
-    const job = createJob(url);
+    // Allow options either under `options` or as top-level fields for convenience.
+    const mergedOptions: JobOptions | undefined = {
+      ...(typeof rest === "object" ? (rest as JobOptions) : {}),
+      ...(typeof options === "object" ? (options as JobOptions) : {}),
+    };
+
+    const job = createJob(url, mergedOptions);
     res.status(202).json({ id: job.id, status: job.status });
   });
 
