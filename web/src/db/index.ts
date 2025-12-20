@@ -10,6 +10,17 @@ if (!connectionString) {
   throw new Error("DATABASE_URL is not set");
 }
 
-const client = postgres(connectionString);
+const poolMax = process.env.DB_POOL_MAX ? Number(process.env.DB_POOL_MAX) : 10;
+const idleTimeoutSeconds = process.env.DB_IDLE_TIMEOUT
+  ? Number(process.env.DB_IDLE_TIMEOUT)
+  : 30;
+const connectTimeoutSeconds = process.env.DB_CONNECT_TIMEOUT
+  ? Number(process.env.DB_CONNECT_TIMEOUT)
+  : 10;
 
+const client = postgres(connectionString, {
+  max: poolMax,
+  idle_timeout: idleTimeoutSeconds,
+  connect_timeout: connectTimeoutSeconds,
+});
 export const db = drizzle(client, { schema });
