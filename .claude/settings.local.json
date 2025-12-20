@@ -12,7 +12,8 @@
       "Bash(pnpm dev:worker:*)",
       "Bash(pnpm --filter worker dev:*)",
       "Bash(pnpm test:*)",
-      "Bash(pnpm test:worker:*)"
+      "Bash(pnpm test:worker:*)",
+      "Bash(cat:*)"
     ]
   }
 }

@@ -17,3 +17,4 @@ describe("options", () => {
     expect(out.maxLinksToCheck).toBe(DEFAULT_OPTIONS.maxLinksToCheck);
   });
 });
+

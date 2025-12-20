@@ -47,3 +47,4 @@ describe("crawl", () => {
     expect(out).toEqual(["https://example.com/a", "https://example.com/b"]);
   });
 });
+

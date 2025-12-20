@@ -4,3 +4,4 @@ export function isAlive(statusCode: number): boolean {
   if (statusCode === 401 || statusCode === 403) return true;
   return false;
 }
+
