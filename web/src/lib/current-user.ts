@@ -33,12 +33,3 @@ export async function ensureCurrentUser(): Promise<CurrentUser> {
   return user;
 }
 
-export async function requireAuth(): Promise<CurrentUser> {
-  const user = await getCurrentUser();
-
-  if (!user) {
-    throw new Error("Unauthorized");
-  }
-
-  return user;
-}

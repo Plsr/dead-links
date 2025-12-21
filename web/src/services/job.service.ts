@@ -1,5 +1,5 @@
 import type { JobResponseDto, JobCreatedDto } from "@/dto/job.dto";
-import { getCurrentUser, requireAuth } from "@/lib/current-user";
+import { getCurrentUser } from "@/lib/current-user";
 import { type Result, ok, err } from "@/lib/result";
 
 const WORKER_URL = process.env.WORKER_URL || "http://localhost:3001";
@@ -8,7 +8,11 @@ export async function createJob(
   url: string
 ): Promise<Result<JobCreatedDto>> {
   try {
-    const user = await requireAuth();
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return err("Unauthorized");
+    }
 
     const res = await fetch(`${WORKER_URL}/jobs`, {
       method: "POST",
@@ -88,7 +92,11 @@ export async function getJobsByIds(
   ids: string[]
 ): Promise<Result<JobResponseDto[]>> {
   try {
-    await requireAuth();
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return err("Unauthorized");
+    }
 
     const results = await Promise.all(ids.map(getJob));
 
