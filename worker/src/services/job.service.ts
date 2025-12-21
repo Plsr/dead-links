@@ -10,6 +10,7 @@ export async function createJob(dto: CreateJobDto): Promise<JobCreatedDto> {
 
   const job = await jobRepository.createJob({
     url: dto.url,
+    userId: dto.userId,
     options,
   });
 
@@ -25,6 +26,11 @@ export async function getJob(id: string): Promise<JobResponseDto | undefined> {
   const job = await jobRepository.findJobById(id);
   if (!job) return undefined;
   return toJobResponseDto(job);
+}
+
+export async function getJobsByUser(userId: string): Promise<JobResponseDto[]> {
+  const jobs = await jobRepository.findJobsByUserId(userId);
+  return jobs.map(toJobResponseDto);
 }
 
 async function startProcessing(job: Job): Promise<void> {

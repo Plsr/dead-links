@@ -12,10 +12,15 @@ async function main(): Promise<void> {
   app.use(express.json());
 
   app.post("/jobs", async (req, res) => {
-    const { url, options, ...rest } = req.body ?? {};
+    const { url, userId, options, ...rest } = req.body ?? {};
 
     if (!url) {
       res.status(400).json({ error: "url is required" });
+      return;
+    }
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "userId is required" });
       return;
     }
 
@@ -26,11 +31,28 @@ async function main(): Promise<void> {
     };
 
     try {
-      const job = await jobService.createJob({ url, options: mergedOptions });
+      const job = await jobService.createJob({ url, userId, options: mergedOptions });
       res.status(202).json(job);
     } catch (error) {
       console.error("Failed to create job:", error);
       res.status(500).json({ error: "Failed to create job" });
+    }
+  });
+
+  app.get("/jobs", async (req, res) => {
+    const { userId } = req.query;
+
+    if (!userId || typeof userId !== "string") {
+      res.status(400).json({ error: "userId is required" });
+      return;
+    }
+
+    try {
+      const jobs = await jobService.getJobsByUser(userId);
+      res.json(jobs);
+    } catch (error) {
+      console.error("Failed to get jobs:", error);
+      res.status(500).json({ error: "Failed to get jobs" });
     }
   });
 

@@ -3,6 +3,7 @@ import type { Job, JobResult, JobStatus } from "../db/schema.js";
 
 export interface CreateJobDto {
   url: string;
+  userId: string;
   options?: JobOptions;
 }
 

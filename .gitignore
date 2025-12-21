@@ -2,5 +2,6 @@ node_modules
 .next
 .pnpm-store
 .env
+*.tsbuildinfo
 
 worker/dist
