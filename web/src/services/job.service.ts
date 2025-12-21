@@ -60,7 +60,22 @@ export async function getJob(
     });
 
     if (!res.ok) {
-      return ok(null);
+      if (res.status === 404) {
+        // Job not found
+        return ok(null);
+      }
+
+      let message = "Failed to fetch job";
+      try {
+        const error = await res.json();
+        if (error && typeof error.error === "string") {
+          message = error.error;
+        }
+      } catch {
+        // Ignore JSON parsing errors and use the default message
+      }
+
+      return err(message);
     }
 
     return ok(await res.json());
