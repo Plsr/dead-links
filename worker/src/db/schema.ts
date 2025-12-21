@@ -36,6 +36,7 @@ export interface JobResult {
 
 export const jobs = workerSchema.table("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  userId: text("user_id").notNull(),
   url: text("url").notNull(),
   status: text("status").$type<JobStatus>().notNull().default("pending"),
   options: jsonb("options").$type<Required<JobOptions>>().notNull(),

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { jobs, Job, NewJob, JobStatus, JobResult } from "../db/schema.js";
 
@@ -29,4 +29,12 @@ export async function updateJob(
     .where(eq(jobs.id, id))
     .returning();
   return job;
+}
+
+export async function findJobsByUserId(userId: string): Promise<Job[]> {
+  return db
+    .select()
+    .from(jobs)
+    .where(eq(jobs.userId, userId))
+    .orderBy(desc(jobs.createdAt));
 }
