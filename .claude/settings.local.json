@@ -14,7 +14,8 @@
       "Bash(pnpm test:*)",
       "Bash(pnpm test:worker:*)",
       "Bash(cat:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(tree:*)"
     ]
   }
 }
