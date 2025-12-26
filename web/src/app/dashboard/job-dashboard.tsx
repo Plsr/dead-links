@@ -51,6 +51,32 @@ function LinkStatusBadge({
   );
 }
 
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSeconds < 60) {
+    return "just now";
+  } else if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  } else if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  } else if (diffDays < 7) {
+    return `${diffDays}d ago`;
+  } else {
+    return date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+    });
+  }
+}
+
 function ChevronIcon({ expanded }: { expanded: boolean }) {
   return (
     <svg
@@ -281,9 +307,14 @@ export function JobDashboard({
                   }
                 >
                   <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-medium truncate flex-1">
-                      {job.url}
-                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium truncate block">
+                        {job.url}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatRelativeTime(job.createdAt)}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-2">
                       <StatusBadge status={job.status} />
                       {hasDeadOrErrors && <ChevronIcon expanded={isExpanded} />}
