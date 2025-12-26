@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
+import { formatDistanceToNow } from "date-fns";
 import { submitJob, pollJobs } from "./actions";
 import type { JobResponseDto, LinkResult } from "@/dto/job.dto";
 
@@ -49,32 +50,6 @@ function LinkStatusBadge({
       {label}
     </span>
   );
-}
-
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSeconds = Math.floor(diffMs / 1000);
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  const diffHours = Math.floor(diffMinutes / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffSeconds < 60) {
-    return "just now";
-  } else if (diffMinutes < 60) {
-    return `${diffMinutes}m ago`;
-  } else if (diffHours < 24) {
-    return `${diffHours}h ago`;
-  } else if (diffDays < 7) {
-    return `${diffDays}d ago`;
-  } else {
-    return date.toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-    });
-  }
 }
 
 function ChevronIcon({ expanded }: { expanded: boolean }) {
@@ -312,7 +287,7 @@ export function JobDashboard({
                         {job.url}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {formatRelativeTime(job.createdAt)}
+                        {formatDistanceToNow(new Date(job.createdAt), { addSuffix: true })}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
