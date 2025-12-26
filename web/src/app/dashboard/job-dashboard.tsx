@@ -1,10 +1,15 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { submitJob, pollJobs } from "./actions";
 import type { JobResponseDto, LinkResult } from "@/dto/job.dto";
 
-const POLL_INTERVAL = 3000;
+// Polling configuration with exponential backoff
+const POLL_CONFIG = {
+  initialInterval: 1000, // Start with 1 second
+  maxInterval: 15000, // Cap at 15 seconds
+  multiplier: 1.5, // Increase by 50% each poll
+} as const;
 
 function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
@@ -23,7 +28,13 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function LinkStatusBadge({ status, statusCode }: { status: string; statusCode?: number }) {
+function LinkStatusBadge({
+  status,
+  statusCode,
+}: {
+  status: string;
+  statusCode?: number;
+}) {
   const styles: Record<string, string> = {
     dead: "bg-destructive/20 text-destructive",
     error: "bg-yellow-500/20 text-yellow-600",
@@ -48,7 +59,12 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
       stroke="currentColor"
       viewBox="0 0 24 24"
     >
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M19 9l-7 7-7-7"
+      />
     </svg>
   );
 }
@@ -56,7 +72,7 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
 function DeadLinksList({ links }: { links: LinkResult[] }) {
   const deadLinks = useMemo(
     () => links.filter((l) => l.status === "dead" || l.status === "error"),
-    [links]
+    [links],
   );
 
   if (deadLinks.length === 0) {
@@ -94,7 +110,11 @@ function DeadLinksList({ links }: { links: LinkResult[] }) {
   );
 }
 
-export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] }) {
+export function JobDashboard({
+  initialJobs,
+}: {
+  initialJobs: JobResponseDto[];
+}) {
   const [jobs, setJobs] = useState<JobResponseDto[]>(initialJobs);
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -114,35 +134,65 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
   };
 
   const hasPendingJobs = jobs.some(
-    (j) => j.status === "pending" || j.status === "processing"
+    (j) => j.status === "pending" || j.status === "processing",
   );
 
+  // Track polling interval for exponential backoff
+  const pollIntervalRef = useRef<number>(POLL_CONFIG.initialInterval);
+
+  // Reset interval when new jobs are added
   useEffect(() => {
-    if (!hasPendingJobs) return;
+    pollIntervalRef.current = POLL_CONFIG.initialInterval;
+  }, [jobs.length]);
+
+  useEffect(() => {
+    if (!hasPendingJobs) {
+      // Reset interval when no pending jobs
+      pollIntervalRef.current = POLL_CONFIG.initialInterval;
+      return;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
-      setJobs((currentJobs) => {
-        const pendingIds = currentJobs
-          .filter((j) => j.status === "pending" || j.status === "processing")
-          .map((j) => j.id);
+      const pendingIds = jobs
+        .filter((j) => j.status === "pending" || j.status === "processing")
+        .map((j) => j.id);
 
-        if (pendingIds.length === 0) return currentJobs;
+      if (pendingIds.length === 0) return;
 
-        pollJobs(pendingIds).then((result) => {
-          if (result.success) {
-            setJobs((prev) =>
-              prev.map((job) => result.data.find((u) => u.id === job.id) || job)
-            );
-          }
+      const result = await pollJobs(pendingIds);
+      if (result.success) {
+        const hasStatusChange = result.data.some((updated) => {
+          const existing = jobs.find((j) => j.id === updated.id);
+          return existing && existing.status !== updated.status;
         });
 
-        return currentJobs;
-      });
+        if (hasStatusChange) {
+          // Reset interval on status change for responsiveness
+          pollIntervalRef.current = POLL_CONFIG.initialInterval;
+        } else {
+          // Increase interval with exponential backoff
+          pollIntervalRef.current = Math.min(
+            pollIntervalRef.current * POLL_CONFIG.multiplier,
+            POLL_CONFIG.maxInterval,
+          );
+        }
+
+        setJobs((prev) =>
+          prev.map((job) => result.data.find((u) => u.id === job.id) || job),
+        );
+      }
+
+      // Schedule next poll with current interval
+      timeoutId = setTimeout(poll, pollIntervalRef.current);
     };
 
-    const interval = setInterval(poll, POLL_INTERVAL);
-    return () => clearInterval(interval);
-  }, [hasPendingJobs]);
+    // Start polling
+    timeoutId = setTimeout(poll, pollIntervalRef.current);
+
+    return () => clearTimeout(timeoutId);
+  }, [hasPendingJobs, jobs]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,9 +242,7 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
         </button>
       </form>
 
-      {error && (
-        <p className="mb-4 text-sm text-destructive">{error}</p>
-      )}
+      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
       {jobs.length === 0 ? (
         <p className="text-center text-muted-foreground py-12">
@@ -205,7 +253,8 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
           {jobs.map((job) => {
             const isCompleted = job.status === "completed" && job.result;
             const isExpanded = expandedJobs.has(job.id);
-            const hasDeadOrErrors = isCompleted && (job.result!.dead > 0 || job.result!.errors > 0);
+            const hasDeadOrErrors =
+              isCompleted && (job.result!.dead > 0 || job.result!.errors > 0);
 
             return (
               <li
@@ -216,7 +265,10 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
                   className={`p-4 ${hasDeadOrErrors ? "cursor-pointer hover:bg-muted/50 transition-colors" : ""}`}
                   onClick={() => hasDeadOrErrors && toggleExpanded(job.id)}
                   onKeyDown={(e) => {
-                    if (hasDeadOrErrors && (e.key === "Enter" || e.key === " ")) {
+                    if (
+                      hasDeadOrErrors &&
+                      (e.key === "Enter" || e.key === " ")
+                    ) {
                       e.preventDefault();
                       toggleExpanded(job.id);
                     }
@@ -224,7 +276,9 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
                   role={hasDeadOrErrors ? "button" : undefined}
                   tabIndex={hasDeadOrErrors ? 0 : undefined}
                   aria-expanded={hasDeadOrErrors ? isExpanded : undefined}
-                  aria-controls={hasDeadOrErrors ? `job-details-${job.id}` : undefined}
+                  aria-controls={
+                    hasDeadOrErrors ? `job-details-${job.id}` : undefined
+                  }
                 >
                   <div className="flex items-center justify-between gap-4">
                     <span className="text-sm font-medium truncate flex-1">
@@ -232,21 +286,28 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
                     </span>
                     <div className="flex items-center gap-2">
                       <StatusBadge status={job.status} />
-                      {hasDeadOrErrors && (
-                        <ChevronIcon expanded={isExpanded} />
-                      )}
+                      {hasDeadOrErrors && <ChevronIcon expanded={isExpanded} />}
                     </div>
                   </div>
                   {isCompleted && (
                     <div className="mt-3 flex gap-4 text-sm">
                       <span className="text-muted-foreground">
-                        <span className="font-medium text-foreground">{job.result!.alive}</span> alive
+                        <span className="font-medium text-foreground">
+                          {job.result!.alive}
+                        </span>{" "}
+                        alive
                       </span>
                       <span className="text-muted-foreground">
-                        <span className="font-medium text-destructive">{job.result!.dead}</span> dead
+                        <span className="font-medium text-destructive">
+                          {job.result!.dead}
+                        </span>{" "}
+                        dead
                       </span>
                       <span className="text-muted-foreground">
-                        <span className="font-medium text-foreground">{job.result!.errors}</span> errors
+                        <span className="font-medium text-foreground">
+                          {job.result!.errors}
+                        </span>{" "}
+                        errors
                       </span>
                     </div>
                   )}
@@ -259,7 +320,9 @@ export function JobDashboard({ initialJobs }: { initialJobs: JobResponseDto[] })
                     id={`job-details-${job.id}`}
                     className="px-4 pb-4 border-t border-border pt-4"
                   >
-                    <h4 className="text-sm font-medium mb-3">Dead Links & Errors</h4>
+                    <h4 className="text-sm font-medium mb-3">
+                      Dead Links & Errors
+                    </h4>
                     <DeadLinksList links={job.result!.links} />
                   </div>
                 )}
